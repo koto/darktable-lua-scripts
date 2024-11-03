@@ -188,7 +188,7 @@ local function install_module()
     -- register new module "external editors" in lighttable --
     dt.register_lib(
       MODULE_NAME,          
-      _("edit selection externally"),
+      _("external editors (multi)"),
       true, -- expandable
       false,  -- resetable
       views,
