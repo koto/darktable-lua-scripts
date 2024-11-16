@@ -101,6 +101,7 @@ local PS = dt.configuration.running_os == "windows" and "\\" or "/"
 local ENCODING_VARIANT_SDR_AND_GAINMAP = 1
 local ENCODING_VARIANT_SDR_AND_HDR = 2
 local ENCODING_VARIANT_SDR_AUTO_GAINMAP = 3
+local ENCODING_VARIANT_HDR_ONLY = 4
 
 local SELECTION_TYPE_ONE_STACK = 1
 local SELECTION_TYPE_GROUP_BY_FNAME = 2
@@ -273,23 +274,24 @@ end
 
 local function get_stacks(images, encoding_variant, selection_type)
     local stacks = {}
-    local extra_image_content_type
+    local primary = "sdr"
+    local extra
     if encoding_variant == ENCODING_VARIANT_SDR_AND_GAINMAP then
-        extra_image_content_type = "gainmap"
+        extra = "gainmap"
     elseif encoding_variant == ENCODING_VARIANT_SDR_AND_HDR then
-        extra_image_content_type = "hdr"
+        extra = "hdr"
     elseif encoding_variant == ENCODING_VARIANT_SDR_AUTO_GAINMAP then
         extra_image_content_type = nil
     end
 
     local tags = nil
-    -- Group images into (sdr [,extra]) stacks
-    -- Assume that the first encountered image from each stack is an sdr one, unless it has a tag matching the expected extra_image_type, or has the expected extension
+    -- Group images into (primary [,extra]) stacks
+    -- Assume that the first encountered image from each stack is a primary one, unless it has a tag matching the expected extra_image_type, or has the expected extension
     for k, v in pairs(images) do
         local is_extra = false
         tags = dt.tags.get_tags(v)
         for ignore, tag in pairs(tags) do
-            if extra_image_content_type and tag.name == extra_image_content_type then
+            if extra and tag.name == extra then
                 is_extra = true
             end
         end
@@ -306,27 +308,27 @@ local function get_stacks(images, encoding_variant, selection_type)
         if stacks[key] == nil then
             stacks[key] = {}
         end
-        if extra_image_content_type and (is_extra or stacks[key]["sdr"]) then
+        if extra and (is_extra or stacks[key][primary]) then
             -- Don't overwrite existing entries
-            if not stacks[key][extra_image_content_type] then
-                stacks[key][extra_image_content_type] = v
+            if not stacks[key][extra] then
+                stacks[key][extra] = v
             end
         elseif not is_extra then
             -- Don't overwrite existing entries
-            if not stacks[key]["sdr"] then
-                stacks[key]["sdr"] = v
+            if not stacks[key][primary] then
+                stacks[key][primary] = v
             end
         end
     end
     -- remove invalid stacks
     local count = 0
     for k, v in pairs(stacks) do
-        if extra_image_content_type then
-            if not v["sdr"] or not v[extra_image_content_type] then
+        if extra then
+            if not v[primary] or not v[extra] then
                 stacks[k] = nil
             else
-                local sdr_w, sdr_h = get_dimensions(v["sdr"])
-                local extra_w, extra_h = get_dimensions(v[extra_image_content_type])
+                local sdr_w, sdr_h = get_dimensions(v[primary])
+                local extra_w, extra_h = get_dimensions(v[extra])
                 if (sdr_w ~= extra_w) or (sdr_h ~= extra_h) then
                     stacks[k] = nil
                 end
@@ -356,6 +358,7 @@ end
 local function generate_ultrahdr(encoding_variant, images, settings, step, total_steps)
     local total_substeps
     local substep = 0
+    local best_source_image
     local uhdr
     local errors = {}
     local remove_files = {}
@@ -418,6 +421,7 @@ local function generate_ultrahdr(encoding_variant, images, settings, step, total
 
     if encoding_variant == ENCODING_VARIANT_SDR_AND_GAINMAP or encoding_variant == ENCODING_VARIANT_SDR_AUTO_GAINMAP then
         total_substeps = 5
+        best_source_image = images["sdr"]
         -- Export/copy both SDR and gainmap to JPEGs
         local sdr = df.create_unique_filename(settings.tmpdir .. PS .. df.chop_filetype(images["sdr"].filename) ..
                                                   ".jpg")
@@ -490,6 +494,7 @@ local function generate_ultrahdr(encoding_variant, images, settings, step, total
         update_job_progress()
     elseif encoding_variant == ENCODING_VARIANT_SDR_AND_HDR then
         total_substeps = 6
+        best_source_image = images["sdr"]
         -- https://discuss.pixls.us/t/manual-creation-of-ultrahdr-images/45004/20
         -- Step 1: Export HDR to JPEG-XL with DT_COLORSPACE_PQ_P3
         local hdr = df.create_unique_filename(settings.tmpdir .. PS .. df.chop_filetype(images["hdr"].filename) ..
@@ -576,13 +581,82 @@ local function generate_ultrahdr(encoding_variant, images, settings, step, total
             end
         end
         update_job_progress()
+    elseif encoding_variant == ENCODING_VARIANT_HDR_ONLY then
+        total_substeps = 5
+        best_source_image = images["hdr"]
+        -- TODO: Check if exporting to JXL would be ok too.
+        -- Step 1: Export HDR to JPEG-XL with DT_COLORSPACE_PQ_P3
+        local hdr = df.create_unique_filename(settings.tmpdir .. PS .. df.chop_filetype(images["hdr"].filename) ..
+                                                  ".jxl")
+        table.insert(remove_files, hdr)
+        ok = copy_or_export(images["hdr"], hdr, "jpegxl", DT_COLORSPACE_PQ_P3, {
+            bpp = 10,
+            quality = 100, -- lossless
+            effort = 1 -- we don't care about the size, the file is temporary.
+        })
+        if not ok then
+            table.insert(errors, string.format(_("Error exporting %s to %s"), images["hdr"].filename, "jxl"))
+            return cleanup(), errors
+        end
+        update_job_progress()
+        -- Step 1: Generate raw HDR image
+        local hdr_raw = df.create_unique_filename(settings.tmpdir .. PS .. df.chop_filetype(images["hdr"].filename) ..
+                                                      ".raw")
+        table.insert(remove_files, hdr_raw)
+        local hdr_w, hdr_h = get_dimensions(images["hdr"])
+        local resize_cmd = ""
+        if hdr_h % 2 + hdr_w % 2 > 0 then -- needs resizing to even dimensions.
+            resize_cmd = string.format(" -vf 'crop=%d:%d:0:0' ", hdr_w - hdr_w % 2, hdr_h - hdr_h % 2)
+        end
+        local size_in_px = (hdr_w - hdr_w % 2) * (hdr_h - hdr_h % 2)
+        cmd = settings.bin.ffmpeg .. " -i " .. df.sanitize_filename(hdr) .. resize_cmd ..
+                  " -pix_fmt p010le -f rawvideo " .. df.sanitize_filename(hdr_raw)
+        if not execute_cmd(cmd, string.format(_("Error generating %s"), hdr_raw)) then
+            return cleanup(), errors
+        end
+        if file_size(hdr_raw) ~= size_in_px * 3 then
+            table.insert(errors,
+                string.format(
+                    _("Wrong raw image resolution: %s, expected %dx%d. Try opening the image in darktable mode first."),
+                    images["hdr"].filename, hdr_w, hdr_h))
+            return cleanup(), errors
+        end
+        update_job_progress()
+        uhdr = df.chop_filetype(hdr_raw) .. "_ultrahdr.jpg"
+        table.insert(remove_files, uhdr)
+        cmd = settings.bin.ultrahdr_app ..
+                  string.format(
+                " -m 0 -p %s -a 0 -b 3 -c 1 -C 1 -t 2 -M 0 -q %d -Q %d -D 1 -L %d -s %d -w %d -h %d -z %s",
+                df.sanitize_filename(hdr_raw), -- -p
+                settings.quality, -- -q
+                settings.quality, -- -Q
+                settings.target_display_peak_nits, -- -L
+                settings.downsample, -- s
+                hdr_w - hdr_w % 2, -- -w
+                hdr_h - hdr_h % 2, -- -h
+                df.sanitize_filename(uhdr) -- -z
+            )
+        if not execute_cmd(cmd, string.format(_("Error merging %s"), uhdr)) then
+            return cleanup(), errors
+        end
+        update_job_progress()
+        if settings.copy_exif then
+            -- Restricting tags to EXIF only, to make sure we won't mess up XMP tags (-all>all).
+            -- This might hapen e.g. when the source files are Adobe gainmap HDRs.
+            cmd = settings.bin.exiftool .. " -tagsfromfile " .. df.sanitize_filename(hdr) .. " -exif " ..
+                      df.sanitize_filename(uhdr) .. " -overwrite_original -preserve"
+            if not execute_cmd(cmd, string.format(_("Error adding EXIF to %s"), uhdr)) then
+                return cleanup(), errors
+            end
+        end
+        update_job_progress()
     end
 
-    local output_dir = settings.use_original_dir and images["sdr"].path or settings.output
+    local output_dir = settings.use_original_dir and best_source_image.path or settings.output
     local output_file = df.create_unique_filename(output_dir .. PS .. df.get_filename(uhdr))
     ok = df.file_move(uhdr, output_file)
     if not ok then
-        table.insert(errors, string.format(_("Error generating UltraHDR for %s"), images["sdr"].filename))
+        table.insert(errors, string.format(_("Error generating UltraHDR for %s"), best_source_image.filename))
         return cleanup(), errors
     end
     if settings.import_to_darktable then
@@ -764,10 +838,11 @@ This will determine the method used to generate UltraHDR.
 - %s: SDR image paired with a gain map image.
 - %s: SDR image paired with an HDR image.
 - %s: Each stack consists of a single SDR image. Gain maps will be copies of SDR images.
+- %s: Each stack consists of a single HDR image. HDR will be tone mapped to SDR.
 
 By default, the first image in a stack is treated as SDR, and the second one is a gain map/HDR.
 You can force the image into a specific stack slot by attaching "hdr" / "gainmap" tags to it.
-]]), _("SDR + gain map"), _("SDR + HDR"), _("SDR only")),
+]]), _("SDR + gain map"), _("SDR + HDR"), _("SDR only"), _("HDR only")),
     selected = 0,
     changed_callback = function(self)
         GUI.run.sensitive = self.selected and self.selected > 0
@@ -781,7 +856,8 @@ You can force the image into a specific stack slot by attaching "hdr" / "gainmap
     end,
     _("SDR + gain map"), -- ENCODING_VARIANT_SDR_AND_GAINMAP
     _("SDR + HDR"), -- ENCODING_VARIANT_SDR_AND_HDR
-    _("SDR only") -- ENCODING_VARIANT_SDR_AUTO_GAINMAP
+    _("SDR only"), -- ENCODING_VARIANT_SDR_AUTO_GAINMAP
+    _("HDR only") -- ENCODING_VARIANT_HDR_ONLY
 }
 
 GUI.optionwidgets.selection_type_combo = dt.new_widget("combobox") {
