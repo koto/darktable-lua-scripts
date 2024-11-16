@@ -79,6 +79,7 @@ local GUI = {
         executable_path_widget = {},
         quality_widget = {},
         gainmap_downsampling_widget = {},
+        target_display_peak_nits_widget = {}
     },
     options = {},
     run = {}
@@ -146,7 +147,11 @@ local function save_preferences()
         dt.preferences.write(namespace, "hdr_capacity_max", "float", GUI.optionwidgets.hdr_capacity_max.value)
     end
     dt.preferences.write(namespace, "quality", "integer", GUI.optionwidgets.quality_widget.value)
-    dt.preferences.write(namespace, "gainmap_downsampling", "integer", GUI.optionwidgets.gainmap_downsampling_widget.value)
+    dt.preferences.write(namespace, "gainmap_downsampling", "integer",
+        GUI.optionwidgets.gainmap_downsampling_widget.value)
+    dt.preferences.write(namespace, "target_display_peak_nits", "integer",
+        (GUI.optionwidgets.target_display_peak_nits_widget.value+0.5)//1)
+
 end
 
 local function default_to(value, default)
@@ -179,7 +184,10 @@ local function load_preferences()
     GUI.optionwidgets.hdr_capacity_max.value = default_to(dt.preferences.read(namespace, "hdr_capacity_max", "float"),
         6.0)
     GUI.optionwidgets.quality_widget.value = default_to(dt.preferences.read(namespace, "quality", "integer"), 95)
-    GUI.optionwidgets.gainmap_downsampling_widget.value = default_to(dt.preferences.read(namespace, "gainmap_downsampling", "integer"), 0)
+    GUI.optionwidgets.target_display_peak_nits_widget.value = default_to(
+        dt.preferences.read(namespace, "target_display_peak_nits", "integer"), 10000)
+    GUI.optionwidgets.gainmap_downsampling_widget.value = default_to(
+        dt.preferences.read(namespace, "gainmap_downsampling", "integer"), 0)
 end
 
 -- Changes the combobox selection blindly until a paired config value is set.
@@ -196,8 +204,8 @@ local function set_combobox(path, instance, config_name, new_config_value)
     local limit, i = 30, 0 -- in case there is no matching config value in the first n entries of a combobox.
     while i < limit do
         i = i + 1
+        dt.gui.action(path, 0, "selection", "next", 1.0)
         dt.control.sleep(50)
-        dt.control.sleep(10)
         if dt.preferences.read("darktable", config_name, "integer") == new_config_value then
             log.msg(log.debug, string.format(_("Changed %s from %d to %d"), config_name, pref, new_config_value))
             return pref
@@ -225,7 +233,8 @@ local function assert_settings_correct(encoding_variant)
             hdr_capacity_max = GUI.optionwidgets.hdr_capacity_max.value
         },
         quality = GUI.optionwidgets.quality_widget.value,
-        downsample = 2^GUI.optionwidgets.gainmap_downsampling_widget.value,
+        target_display_peak_nits = (GUI.optionwidgets.target_display_peak_nits_widget.value+0.5)//1,
+        downsample = 2 ^ GUI.optionwidgets.gainmap_downsampling_widget.value,
         tmpdir = dt.configuration.tmp_dir,
         skip_cleanup = false -- keep temporary files around, for debugging.
     }
@@ -457,9 +466,13 @@ local function generate_ultrahdr(encoding_variant, images, settings, step, total
         -- Merge files
         uhdr = df.chop_filetype(sdr) .. "_ultrahdr.jpg"
         table.insert(remove_files, uhdr)
-        cmd = settings.bin.ultrahdr_app .. " -m 0 -i " .. df.sanitize_filename(sdr .. ".noexif") .. " -g " ..
-                  df.sanitize_filename(gainmap) .. " -f " .. df.sanitize_filename(metadata_file) .. " -z " ..
-                  df.sanitize_filename(uhdr)
+        cmd = settings.bin.ultrahdr_app ..
+                  string.format(" -m 0 -i %s -g %s -L %d -f %s -z %s", df.sanitize_filename(sdr .. ".noexif"), -- -i 
+            df.sanitize_filename(gainmap), -- -g
+            settings.target_display_peak_nits, -- -L            
+            df.sanitize_filename(metadata_file), -- -f 
+            df.sanitize_filename(uhdr) -- -z
+            )
         if not execute_cmd(cmd, string.format(_("Error merging UltraHDR to %s"), uhdr)) then
             return cleanup(), errors
         end
@@ -529,15 +542,26 @@ local function generate_ultrahdr(encoding_variant, images, settings, step, total
         end
         -- sanity check for file sizes (sometimes dt exports different size images if the files were never opened in darktable view)
         if file_size(sdr_raw) ~= size_in_px * 4 or file_size(hdr_raw) ~= size_in_px * 3 then
-            table.insert(errors, string.format(_("Wrong raw image resolution: %s, expected %dx%d. Try opening the image in darktable mode first."), images["sdr"].filename, sdr_w, sdr_h))
+            table.insert(errors,
+                string.format(
+                    _("Wrong raw image resolution: %s, expected %dx%d. Try opening the image in darktable mode first."),
+                    images["sdr"].filename, sdr_w, sdr_h))
             return cleanup(), errors
         end
         update_job_progress()
-        cmd = settings.bin.ultrahdr_app .. " -m 0 -y " .. df.sanitize_filename(sdr_raw) .. " -p " ..
-                  df.sanitize_filename(hdr_raw) ..
-                  string.format(" -a 0 -b 3 -c 1 -C 1 -t 2 -M 0 -s 1 -q %d -Q %d -D 1 ", settings.quality,
-                settings.quality) .. string.format(" -s %d ", settings.downsample) .. " -w " .. tostring(sdr_w - sdr_w % 2) .. " -h " .. tostring(sdr_h - sdr_h % 2) ..
-                  " -z " .. df.sanitize_filename(uhdr)
+        cmd = settings.bin.ultrahdr_app ..
+                  string.format(
+                " -m 0 -y %s -p %s -a 0 -b 3 -c 1 -C 1 -t 2 -M 0 -q %d -Q %d -L %d -D 1 -s %d -w %d -h %d -z %s",
+                df.sanitize_filename(sdr_raw), -- -y
+                df.sanitize_filename(hdr_raw), -- -p
+                settings.quality, -- -q
+                settings.quality, -- -Q
+                settings.target_display_peak_nits, -- -L
+                settings.downsample, -- -s
+                sdr_w - sdr_w % 2, -- w
+                sdr_h - sdr_h % 2, -- h
+                df.sanitize_filename(uhdr) -- z
+            )
         if not execute_cmd(cmd, string.format(_("Error merging %s"), uhdr)) then
             return cleanup(), errors
         end
@@ -594,7 +618,9 @@ local function main()
 
     local stacks, stack_count = get_stacks(dt.gui.selection(), encoding_variant, selection_type)
     if stack_count == 0 then
-        dt.print(string.format(_("No image stacks detected.\n\nMake sure that the image pairs have the same widths and heights."), stack_count))
+        dt.print(string.format(_(
+            "No image stacks detected.\n\nMake sure that the image pairs have the same widths and heights."),
+            stack_count))
         return
     end
     dt.print(string.format(_("Detected %d image stack(s)"), stack_count))
@@ -788,9 +814,24 @@ GUI.optionwidgets.quality_widget = dt.new_widget("slider") {
     end
 }
 
+GUI.optionwidgets.target_display_peak_nits_widget = dt.new_widget("slider") {
+    label = _('target display peak brightness (nits)'),
+    tooltip = _('Peak brightness of target display in nits (defaults to 10000)'),
+    hard_min = 203,
+    hard_max = 10000,
+    soft_min = 1000,
+    soft_max = 10000,
+    step = 10,
+    digits = 0,
+    reset_callback = function(self)
+        self.value = 10000
+    end
+}
+
 GUI.optionwidgets.gainmap_downsampling_widget = dt.new_widget("slider") {
     label = _('gain map downsampling steps'),
-    tooltip = _('Exponent (2^x) of the gain map downsampling factor.\nDownsampling reduces the gain map resolution.\n\n0 = don\'t downsample the gain map, 7 = maximum downsampling (128x)'),
+    tooltip = _(
+        'Exponent (2^x) of the gain map downsampling factor.\nDownsampling reduces the gain map resolution.\n\n0 = don\'t downsample the gain map, 7 = maximum downsampling (128x)'),
     hard_min = 0,
     hard_max = 7,
     soft_min = 0,
@@ -808,6 +849,7 @@ GUI.optionwidgets.encoding_settings_box = dt.new_widget("box") {
     GUI.optionwidgets.encoding_variant_combo,
     GUI.optionwidgets.quality_widget,
     GUI.optionwidgets.gainmap_downsampling_widget,
+    GUI.optionwidgets.target_display_peak_nits_widget,
     GUI.optionwidgets.metadata_box
 }
 
