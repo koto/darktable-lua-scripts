@@ -192,10 +192,11 @@ local function set_combobox(path, instance, config_name, new_config_value)
     end
 
     dt.gui.action(path, 0, "selection", "first", 1.0)
+    dt.control.sleep(50)
     local limit, i = 30, 0 -- in case there is no matching config value in the first n entries of a combobox.
     while i < limit do
         i = i + 1
-        dt.gui.action(path, 0, "selection", "next", 1.0)
+        dt.control.sleep(50)
         dt.control.sleep(10)
         if dt.preferences.read("darktable", config_name, "integer") == new_config_value then
             log.msg(log.debug, string.format(_("Changed %s from %d to %d"), config_name, pref, new_config_value))
