@@ -281,7 +281,10 @@ local function get_stacks(images, encoding_variant, selection_type)
     elseif encoding_variant == ENCODING_VARIANT_SDR_AND_HDR then
         extra = "hdr"
     elseif encoding_variant == ENCODING_VARIANT_SDR_AUTO_GAINMAP then
-        extra_image_content_type = nil
+        extra = nil
+    elseif encoding_variant == ENCODING_VARIANT_HDR_ONLY then
+        extra = nil
+        primary = "hdr"
     end
 
     local tags = nil
