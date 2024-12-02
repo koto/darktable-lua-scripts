@@ -39,6 +39,7 @@ USAGE
 ]] local dt = require "darktable"
 local du = require "lib/dtutils"
 local df = require "lib/dtutils.file"
+local ds = require "lib/dtutils.string"
 local log = require "lib/dtutils.log"
 local dtsys = require "lib/dtutils.system"
 local dd = require "lib/dtutils.debug"
@@ -65,8 +66,9 @@ local GUI = {
         encoding_settings_box = {},
         output_settings_label = {},
         output_settings_box = {},
-        use_original_directory = {},
-        output_directory_widget = {},
+        output_filepath_label = {},
+        output_filepath_widget = {},
+        overwrite_on_conflict = {},
         copy_exif = {},
         import_to_darktable = {},
         min_content_boost = {},
@@ -135,10 +137,8 @@ end
 local function save_preferences()
     dt.preferences.write(namespace, "encoding_variant", "integer", GUI.optionwidgets.encoding_variant_combo.selected)
     dt.preferences.write(namespace, "selection_type", "integer", GUI.optionwidgets.selection_type_combo.selected)
-    dt.preferences.write(namespace, "use_original_directory", "bool", GUI.optionwidgets.use_original_directory.value)
-    if GUI.optionwidgets.output_directory_widget.value then
-        dt.preferences.write(namespace, "output_directory", "string", GUI.optionwidgets.output_directory_widget.value)
-    end
+    dt.preferences.write(namespace, "output_filepath_pattern", "string", GUI.optionwidgets.output_filepath_widget.text)
+    dt.preferences.write(namespace, "overwrite_on_conflict", "bool", GUI.optionwidgets.overwrite_on_conflict.value)
     dt.preferences.write(namespace, "import_to_darktable", "bool", GUI.optionwidgets.import_to_darktable.value)
     dt.preferences.write(namespace, "copy_exif", "bool", GUI.optionwidgets.copy_exif.value)
     if GUI.optionwidgets.min_content_boost.value then
@@ -169,11 +169,8 @@ local function load_preferences()
     GUI.optionwidgets.selection_type_combo.selected = math.max(
         dt.preferences.read(namespace, "selection_type", "integer"), SELECTION_TYPE_ONE_STACK)
 
-    GUI.optionwidgets.output_directory_widget.value = dt.preferences.read(namespace, "output_directory", "string")
-    GUI.optionwidgets.use_original_directory.value = dt.preferences.read(namespace, "use_original_directory", "bool")
-    if not GUI.optionwidgets.output_directory_widget.value then
-        GUI.optionwidgets.use_original_directory.value = true
-    end
+    GUI.optionwidgets.output_filepath_widget.text = dt.preferences.read(namespace, "output_filepath_pattern", "string")    
+    GUI.optionwidgets.overwrite_on_conflict.value = dt.preferences.read(namespace, "overwrite_on_conflict", "bool")
     GUI.optionwidgets.import_to_darktable.value = dt.preferences.read(namespace, "import_to_darktable", "bool")
     GUI.optionwidgets.copy_exif.value = dt.preferences.read(namespace, "copy_exif", "bool")
     GUI.optionwidgets.min_content_boost.value = default_to(dt.preferences.read(namespace, "min_content_boost", "float"),
@@ -223,8 +220,8 @@ local function assert_settings_correct(encoding_variant)
             exiftool = df.check_if_bin_exists("exiftool"),
             ffmpeg = df.check_if_bin_exists("ffmpeg")
         },
-        output = GUI.optionwidgets.output_directory_widget.value,
-        use_original_dir = GUI.optionwidgets.use_original_directory.value,
+        overwrite_on_conflict = GUI.optionwidgets.overwrite_on_conflict.value,
+        output_filepath_pattern = GUI.optionwidgets.output_filepath_widget.text,
         import_to_darktable = GUI.optionwidgets.import_to_darktable.value,
         copy_exif = GUI.optionwidgets.copy_exif.value,
         metadata = {
@@ -239,10 +236,6 @@ local function assert_settings_correct(encoding_variant)
         tmpdir = dt.configuration.tmp_dir,
         skip_cleanup = false -- keep temporary files around, for debugging.
     }
-
-    if not settings.use_original_dir and (not settings.output or not df.check_if_file_exists(settings.output)) then
-        table.insert(errors, string.format(_("output directory (%s) not found"), settings.output))
-    end
 
     for k, v in pairs(settings.bin) do
         if not v then
@@ -421,6 +414,13 @@ local function generate_ultrahdr(encoding_variant, images, settings, step, total
         end
         return false
     end
+
+    -- replace is plain text version of string.gsub()
+    function replace(strTxt,strOld,strNew,intNum)
+        local strMagic = "([%^%$%(%)%%%.%[%]%*%+%-%?])"    -- UTF-8 replacement for "(%W)"
+        strOld = tostring(strOld or ""):gsub(strMagic,"%%%1")  -- Hide magic pattern symbols
+        return tostring(strTxt or ""):gsub(strOld,function() return strNew end,tonumber(intNum))  -- Hide % capture symbols
+    end --     
 
     if encoding_variant == ENCODING_VARIANT_SDR_AND_GAINMAP or encoding_variant == ENCODING_VARIANT_SDR_AUTO_GAINMAP then
         total_substeps = 5
@@ -655,8 +655,13 @@ local function generate_ultrahdr(encoding_variant, images, settings, step, total
         update_job_progress()
     end
 
-    local output_dir = settings.use_original_dir and best_source_image.path or settings.output
-    local output_file = df.create_unique_filename(output_dir .. PS .. df.get_filename(uhdr))
+    local output_file = ds.substitute(best_source_image, step + 1, settings.output_filepath_pattern) .. ".jpg"
+    -- Workaround a bug fixed in https://github.com/darktable-org/lua-scripts/pull/541.
+    output_file = replace(output_file, best_source_image.filename, ds.get_basename(best_source_image.filename))
+    output_file = replace(output_file, best_source_image.film.path, ds.get_basename(best_source_image.film.path))
+    if not settings.overwrite_on_conflict then
+        output_file = df.create_unique_filename(output_file)
+    end
     ok = df.file_move(uhdr, output_file)
     if not ok then
         table.insert(errors, string.format(_("Error generating UltraHDR for %s"), best_source_image.filename))
@@ -733,17 +738,20 @@ GUI.optionwidgets.output_settings_label = dt.new_widget("section_label") {
     label = _("output")
 }
 
-GUI.optionwidgets.output_directory_widget = dt.new_widget("file_chooser_button") {
-    title = _("select directory to write UltraHDR image files to"),
-    is_directory = true
+GUI.optionwidgets.output_filepath_label = dt.new_widget("label") {
+    label = _("file path pattern"),
+    tooltip = ds.get_substitution_tooltip()
 }
 
-GUI.optionwidgets.use_original_directory = dt.new_widget("check_button") {
-    label = _("export to original directory"),
-    tooltip = _("Write UltraHDR images to the same directory as their original images"),
-    clicked_callback = function(self)
-        GUI.optionwidgets.output_directory_widget.sensitive = not self.value
-    end
+GUI.optionwidgets.output_filepath_widget = dt.new_widget("entry") {
+    tooltip = ds.get_substitution_tooltip(),
+    placeholder = _("e.g. $(FILE_FOLDER)/$(FILE_NAME)"),
+    -- text = _("select directory to write UltraHDR image files to")
+}
+
+GUI.optionwidgets.overwrite_on_conflict = dt.new_widget("check_button") {
+    label = _("overwrite if exists"),
+    tooltip = _("If the output file already exists, overwrite it. If unchecked, a unique filename will be created instead."),
 }
 
 GUI.optionwidgets.import_to_darktable = dt.new_widget("check_button") {
@@ -759,8 +767,9 @@ GUI.optionwidgets.copy_exif = dt.new_widget("check_button") {
 GUI.optionwidgets.output_settings_box = dt.new_widget("box") {
     orientation = "vertical",
     GUI.optionwidgets.output_settings_label,
-    GUI.optionwidgets.use_original_directory,
-    GUI.optionwidgets.output_directory_widget,
+    GUI.optionwidgets.output_filepath_label,
+    GUI.optionwidgets.output_filepath_widget,
+    GUI.optionwidgets.overwrite_on_conflict,
     GUI.optionwidgets.import_to_darktable,
     GUI.optionwidgets.copy_exif
 }
