@@ -255,7 +255,8 @@ local function assert_settings_correct(encoding_variant)
         target_display_peak_nits = (GUI.optionwidgets.target_display_peak_nits_widget.value+0.5)//1,
         downsample = 2 ^ GUI.optionwidgets.gainmap_downsampling_widget.value,
         tmpdir = dt.configuration.tmp_dir,
-        skip_cleanup = false -- keep temporary files around, for debugging.
+        skip_cleanup = false, -- keep temporary files around, for debugging.
+        force_export = true -- if false, will copy source files instead of exporting if the file extension matches the format expectation.
     }
 
     for k, v in pairs(settings.bin) do
@@ -401,7 +402,7 @@ local function generate_ultrahdr(encoding_variant, images, settings, step, total
     end
 
     function copy_or_export(src_image, dest, format, colorspace, props)
-        if df.get_filetype(src_image.filename) == df.get_filetype(dest) and not src_image.is_altered then
+        if not settings.force_export and df.get_filetype(src_image.filename) == df.get_filetype(dest) and not src_image.is_altered then
             return df.file_copy(src_image.path .. PS .. src_image.filename, dest)
         else
             local prev = set_profile(colorspace)
@@ -766,8 +767,7 @@ GUI.optionwidgets.output_filepath_label = dt.new_widget("label") {
 
 GUI.optionwidgets.output_filepath_widget = dt.new_widget("entry") {
     tooltip = ds.get_substitution_tooltip(),
-    placeholder = _("e.g. $(FILE_FOLDER)/$(FILE_NAME)"),
-    -- text = _("select directory to write UltraHDR image files to")
+    placeholder = _("e.g. $(FILE_FOLDER)/$(FILE_NAME)_ultrahdr"),
 }
 
 GUI.optionwidgets.overwrite_on_conflict = dt.new_widget("check_button") {
