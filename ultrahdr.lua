@@ -112,6 +112,12 @@ local SELECTION_TYPE_GROUP_BY_FNAME = 2
 local DT_COLORSPACE_PQ_P3 = 24
 local DT_COLORSPACE_DISPLAY_P3 = 26
 
+-- 1-based position of a colorspace in export profile combobox.
+local COLORSPACE_TO_GUI_ACTION = {
+    [DT_COLORSPACE_PQ_P3] = 9,
+    [DT_COLORSPACE_DISPLAY_P3] = 11
+}
+
 local function generate_metadata_file(settings)
     local metadata_file_fmt = [[--maxContentBoost %f
 --minContentBoost %f
@@ -188,10 +194,25 @@ local function load_preferences()
         dt.preferences.read(namespace, "gainmap_downsampling", "integer"), 0)
 end
 
+local function set_profile(colorspace)
+    local set_directly = true
+
+    if set_directly then
+        -- New method, with hardcoded export profile values.
+        local old = dt.gui.action("lib/export/profile", 0, "selection", "", "") * -1
+        local new = COLORSPACE_TO_GUI_ACTION[colorspace] or colorspace
+        log.msg(log.debug, string.format("%d %d %d %d", colorspace, new, old, new - old))
+        dt.gui.action("lib/export/profile", 0, "selection", "next", new - old)
+        return old
+    else
+        -- Old method, timing-dependent
+        return set_combobox("lib/export/profile", 0, "plugins/lighttable/export/icctype", colorspace)
+    end
+end
+
 -- Changes the combobox selection blindly until a paired config value is set.
 -- Workaround for https://github.com/darktable-org/lua-scripts/issues/522
 local function set_combobox(path, instance, config_name, new_config_value)
-
     local pref = dt.preferences.read("darktable", config_name, "integer")
     if pref == new_config_value then
         return new_config_value
@@ -383,7 +404,7 @@ local function generate_ultrahdr(encoding_variant, images, settings, step, total
         if df.get_filetype(src_image.filename) == df.get_filetype(dest) and not src_image.is_altered then
             return df.file_copy(src_image.path .. PS .. src_image.filename, dest)
         else
-            local prev = set_combobox("lib/export/profile", 0, "plugins/lighttable/export/icctype", colorspace)
+            local prev = set_profile(colorspace)
             if not prev then
                 return false
             end
@@ -398,7 +419,7 @@ local function generate_ultrahdr(encoding_variant, images, settings, step, total
             end
 
             if prev then
-                set_combobox("lib/export/profile", 0, "plugins/lighttable/export/icctype", prev)
+                set_profile(prev)
             end
             return ok
         end
