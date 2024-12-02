@@ -875,6 +875,10 @@ This will determine the method used to generate UltraHDR.
 
 By default, the first image in a stack is treated as SDR, and the second one is a gain map/HDR.
 You can force the image into a specific stack slot by attaching "hdr" / "gainmap" tags to it.
+
+For HDR source images, apply a log2(203 nits/10000 nits) = -5.62 EV exposure correction
+before generating UltraHDR.
+
 ]]), _("SDR + gain map"), _("SDR + HDR"), _("SDR only"), _("HDR only")),
     selected = 0,
     changed_callback = function(self)
