@@ -157,7 +157,7 @@ local function save_preferences()
     dt.preferences.write(namespace, "gainmap_downsampling", "integer",
         GUI.optionwidgets.gainmap_downsampling_widget.value)
     dt.preferences.write(namespace, "target_display_peak_nits", "integer",
-        (GUI.optionwidgets.target_display_peak_nits_widget.value+0.5)//1)
+        (GUI.optionwidgets.target_display_peak_nits_widget.value + 0.5) // 1)
 
 end
 
@@ -175,7 +175,7 @@ local function load_preferences()
     GUI.optionwidgets.selection_type_combo.selected = math.max(
         dt.preferences.read(namespace, "selection_type", "integer"), SELECTION_TYPE_ONE_STACK)
 
-    GUI.optionwidgets.output_filepath_widget.text = dt.preferences.read(namespace, "output_filepath_pattern", "string")    
+    GUI.optionwidgets.output_filepath_widget.text = dt.preferences.read(namespace, "output_filepath_pattern", "string")
     GUI.optionwidgets.overwrite_on_conflict.value = dt.preferences.read(namespace, "overwrite_on_conflict", "bool")
     GUI.optionwidgets.import_to_darktable.value = dt.preferences.read(namespace, "import_to_darktable", "bool")
     GUI.optionwidgets.copy_exif.value = dt.preferences.read(namespace, "copy_exif", "bool")
@@ -252,7 +252,7 @@ local function assert_settings_correct(encoding_variant)
             hdr_capacity_max = GUI.optionwidgets.hdr_capacity_max.value
         },
         quality = GUI.optionwidgets.quality_widget.value,
-        target_display_peak_nits = (GUI.optionwidgets.target_display_peak_nits_widget.value+0.5)//1,
+        target_display_peak_nits = (GUI.optionwidgets.target_display_peak_nits_widget.value + 0.5) // 1,
         downsample = 2 ^ GUI.optionwidgets.gainmap_downsampling_widget.value,
         tmpdir = dt.configuration.tmp_dir,
         skip_cleanup = false, -- keep temporary files around, for debugging.
@@ -402,7 +402,8 @@ local function generate_ultrahdr(encoding_variant, images, settings, step, total
     end
 
     function copy_or_export(src_image, dest, format, colorspace, props)
-        if not settings.force_export and df.get_filetype(src_image.filename) == df.get_filetype(dest) and not src_image.is_altered then
+        if not settings.force_export and df.get_filetype(src_image.filename) == df.get_filetype(dest) and
+            not src_image.is_altered then
             return df.file_copy(src_image.path .. PS .. src_image.filename, dest)
         else
             local prev = set_profile(colorspace)
@@ -438,10 +439,12 @@ local function generate_ultrahdr(encoding_variant, images, settings, step, total
     end
 
     -- replace is plain text version of string.gsub()
-    function replace(strTxt,strOld,strNew,intNum)
-        local strMagic = "([%^%$%(%)%%%.%[%]%*%+%-%?])"    -- UTF-8 replacement for "(%W)"
-        strOld = tostring(strOld or ""):gsub(strMagic,"%%%1")  -- Hide magic pattern symbols
-        return tostring(strTxt or ""):gsub(strOld,function() return strNew end,tonumber(intNum))  -- Hide % capture symbols
+    function replace(strTxt, strOld, strNew, intNum)
+        local strMagic = "([%^%$%(%)%%%.%[%]%*%+%-%?])" -- UTF-8 replacement for "(%W)"
+        strOld = tostring(strOld or ""):gsub(strMagic, "%%%1") -- Hide magic pattern symbols
+        return tostring(strTxt or ""):gsub(strOld, function()
+            return strNew
+        end, tonumber(intNum)) -- Hide % capture symbols
     end --     
 
     if encoding_variant == ENCODING_VARIANT_SDR_AND_GAINMAP or encoding_variant == ENCODING_VARIANT_SDR_AUTO_GAINMAP then
@@ -767,12 +770,13 @@ GUI.optionwidgets.output_filepath_label = dt.new_widget("label") {
 
 GUI.optionwidgets.output_filepath_widget = dt.new_widget("entry") {
     tooltip = ds.get_substitution_tooltip(),
-    placeholder = _("e.g. $(FILE_FOLDER)/$(FILE_NAME)_ultrahdr"),
+    placeholder = _("e.g. $(FILE_FOLDER)/$(FILE_NAME)_ultrahdr")
 }
 
 GUI.optionwidgets.overwrite_on_conflict = dt.new_widget("check_button") {
     label = _("overwrite if exists"),
-    tooltip = _("If the output file already exists, overwrite it. If unchecked, a unique filename will be created instead."),
+    tooltip = _(
+        "If the output file already exists, overwrite it. If unchecked, a unique filename will be created instead.")
 }
 
 GUI.optionwidgets.import_to_darktable = dt.new_widget("check_button") {
@@ -877,9 +881,7 @@ By default, the first image in a stack is treated as SDR, and the second one is 
 You can force the image into a specific stack slot by attaching "hdr" / "gainmap" tags to it.
 
 For HDR source images, apply a log2(203 nits/10000 nits) = -5.62 EV exposure correction
-before generating UltraHDR.
-
-]]), _("SDR + gain map"), _("SDR + HDR"), _("SDR only"), _("HDR only")),
+before generating UltraHDR.]]), _("SDR + gain map"), _("SDR + HDR"), _("SDR only"), _("HDR only")),
     selected = 0,
     changed_callback = function(self)
         GUI.run.sensitive = self.selected and self.selected > 0
